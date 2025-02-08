@@ -28,7 +28,14 @@ def test_model_predict():
 # 2. Testando com casos extremos
 def test_small_dataset():
     data = np.random.rand(5)
-    model = auto_arima(data, seasonal=False)
+    time_series = np.random.rand(10000000)
+    model = auto_arima(time_series,
+                                              seasonal=True,
+                                              m=1,
+                                              trace=False,
+                                              stepwise=True,
+                                              information_criterion='aicc',
+                                              suppress_warnings=True)
     assert model is not None  # Confirma que o modelo foi criado sem erros
 
 def test_large_dataset():
