@@ -1,0 +1,326 @@
+version: 2.1
+
+# This will trigger on tags AND branches
+test-filters: &test-filters
+    tags:
+        only: /.*/
+    branches:
+        only: /.*/
+
+# This will ignore for ALL branches, and only trigger on tags
+deploy-filters: &deploy-filters
+    tags:
+        only: /.*/
+    branches:
+        ignore: /.*/
+
+
+# ############################################
+#
+# Set Circle CI Reusable Commands
+#
+# For more information, see the documentation:
+# https://circleci.com/docs/2.0/reusing-config
+#
+# ############################################
+commands:
+
+  build-test-and-persist:
+    description: "Build a wheel file, run unit tests, and then persist the wheel file"
+    parameters:
+      pythonversion:
+        type: string
+    steps:
+      # does not use makefile, since will require python>=3.5
+      - run:
+          name: Create VERSION file
+          command: python build_tools/get_tag.py
+      - run:
+          name: Check VERSION file
+          command: |
+            if [[ ! -f ~/pmdarima/pmdarima/VERSION ]]; then
+                echo "VERSION file was not created, using 0.0.0"
+                echo "0.0.0" > ~/pmdarima/pmdarima/VERSION
+            fi
+      - run:
+          name: Build wheel file
+          command: ./build_tools/circle/build_wheel.sh << parameters.pythonversion >>
+      - run: 
+          name: Install and run unit tests
+          command: ./build_tools/circle/test_unit.sh << parameters.pythonversion >>
+      # Move the `dist` folder to a new folder keyed on the Python version, then persist it
+      # to the workspace. This allows us to transport data between multiple jobs
+      - run:
+          name: Create workspace
+          command: mkdir -p << parameters.pythonversion >> && cp -R dist << parameters.pythonversion >>/dist
+      - run:
+          name: Inspect workspace
+          command: ls -l << parameters.pythonversion >>/dist
+      - persist_to_workspace:
+          root: << parameters.pythonversion >>
+          paths:
+            - dist
+
+  # Fetch the previously-created `dist` folder keyed on the Python version for deploying
+  restore-whl-file:
+    description: "Fetch the whl artifact we previously persisted"
+    parameters:
+      key:
+        type: string
+    steps:
+      - attach_workspace:
+          at: << parameters.key >>
+      - run: mv << parameters.key >>/dist dist
+
+  deploy-to-pypi:
+    description: "Deploy the contents of dist/ to PyPi"
+    steps:
+      - run: |
+          env > vars.env
+          docker run --rm -it \
+            -v `pwd`:/app \
+            -w /app \
+            --env-file vars.env \
+            python:3.9 \
+            ./build_tools/circle/deploy.sh
+
+jobs:
+
+  # Singular sanity test of miscellaneous items:
+  # - linting
+  # - installing from sdist
+  # - version tagging
+  # This is performed in a single, small job to avoid Circle CI concurrency limiting for
+  # larger unit tests, and to avoid multiple setup steps that can slow the pipeline down
+  test-sanity:
+    docker:
+      - image: python:3.9
+    working_directory: ~/pmdarima
+    environment:
+      SETUPTOOLS_USE_DISTUTILS: stdlib
+    steps:
+    - checkout
+    - run:
+        name: Install requirements
+        command: |
+          make lint-requirements
+    - run:
+        name: Test lint
+        command: make test-lint
+    - run:
+        name: Test version tagging
+        command: |
+          pip install pathlib
+          CIRCLE_TAG=0.99.999 python ~/pmdarima/build_tools/get_tag.py
+
+          if [[ ! -f ~/pmdarima/pmdarima/VERSION ]]; then
+              echo "Expected VERSION file"
+              exit 4
+          fi
+    - run:
+        name: Test install from sdist
+        command: |
+          echo "0.0.0" > ~/pmdarima/pmdarima/VERSION
+
+          # we'll need packaging, numpy, and cython to build this. let install_requires do all the
+          # rest of the work. We build with our lowest supported numpy version to make sure there is no regression
+          pip install "packaging>=17.1" "numpy~=1.19.3" "cython>=0.29,!=0.29.18,!=0.29.31"
+          python setup.py sdist
+
+          cd dist
+          pip install pmdarima-0.0.0.tar.gz
+          python -c 'import pmdarima as pm; print(pm.__version__)'
+
+  # --- Unit tests ---
+  test-unit-cpython39:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - build-test-and-persist:
+          pythonversion: "3.9"
+
+  test-unit-cpython310:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - build-test-and-persist:
+          pythonversion: "3.10"
+
+  test-unit-cpython311:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - build-test-and-persist:
+          pythonversion: "3.11"
+
+  test-unit-cpython312:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - build-test-and-persist:
+          pythonversion: "3.12"
+  # --- /Unit tests ---
+
+  build-doc:
+    docker:
+      - image: alkalineml/pmdarima-doc-base:latest
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - run: make install
+      - run: ./build_tools/circle/build_doc.sh
+      # This persists doc/_build/html for the deploy step
+      - persist_to_workspace:
+          root: doc
+          paths:
+            - _build/html
+
+  # Simple job that passes when all other tests have passed
+  testing-passed:
+    docker:
+      - image: bash:latest
+    steps:
+      - run:
+          name: pmdarima Testing passed
+          command: echo "All tests passed"
+
+  # ############################################
+  #
+  # Deploy commands
+  #
+  # All deploy commands need Docker in some
+  # capacity, so should be run on machines
+  #
+  # ############################################
+
+  deploy-cpython38-whl:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - restore-whl-file:
+          key: "3.8"
+      - deploy-to-pypi
+
+  deploy-cpython39-whl:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - restore-whl-file:
+          key: "3.9"
+      - deploy-to-pypi
+
+  deploy-cpython310-whl:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - restore-whl-file:
+          key: "3.10"
+      - deploy-to-pypi
+
+  deploy-cpython311-whl:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - restore-whl-file:
+          key: "3.11"
+      - deploy-to-pypi
+
+  deploy-cpython312-whl:
+    machine:
+      image: ubuntu-2004:202111-02
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      - restore-whl-file:
+          key: "3.12"
+      - deploy-to-pypi
+
+  # For documentation deployment. You'll need the following environment vars
+  # in your Circle CI settings, otherwise this will not work.
+  #
+  # GH_NAME (your git username)
+  # GH_EMAIL (your git email)
+  # GH_TOKEN (the personal Git token with pushes enabled)
+  deploy-doc:
+    docker:
+      - image: python:3.9
+    working_directory: ~/pmdarima
+    steps:
+      - checkout
+      # Restore the workspace from build-doc
+      # Circle is a little confusing -- we only supply the root from the persist step
+      # https://circleci.com/docs/2.0/workflows/#using-workspaces-to-share-data-among-jobs
+      - attach_workspace:
+          at: doc
+      - run: ./build_tools/circle/deploy_doc.sh
+
+workflows:
+  version: 2
+  pmdarima-pipeline:
+    jobs:
+
+        # run on test and tag
+        - test-sanity:
+            filters: *test-filters
+        - test-unit-cpython39:
+            filters: *test-filters
+        - test-unit-cpython310:
+            filters: *test-filters
+        - test-unit-cpython311:
+            filters: *test-filters
+        - test-unit-cpython312:
+            filters: *test-filters
+        - build-doc:
+            filters: *test-filters
+        - testing-passed:
+            requires:
+                - test-sanity
+                - test-unit-cpython39
+                - test-unit-cpython310
+                - test-unit-cpython311
+                - test-unit-cpython312
+                - build-doc
+            filters: *test-filters
+
+        # All deployment jobs
+        - deploy-doc:
+            requires:
+                - build-doc
+                - testing-passed
+            filters: *test-filters
+
+        - deploy-cpython39-whl:
+            filters: *deploy-filters
+            requires:
+              - deploy-doc
+
+        - deploy-cpython310-whl:
+            filters: *deploy-filters
+            requires:
+              - deploy-doc
+
+        - deploy-cpython311-whl:
+            filters: *deploy-filters
+            requires:
+              - deploy-doc
+
+        - deploy-cpython312-whl:
+            filters: *deploy-filters
+            requires:
+              - deploy-doc

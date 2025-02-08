@@ -1,0 +1,30 @@
+# https://gist.github.com/stevepeak/53bee7b2c326b24a9b4a
+
+# Prevent codecov from commenting
+comment: false
+
+coverage:
+  precision: 2
+  round: down
+
+  status:
+    project:
+      default:
+        target: 95%
+        informational: true
+        branches:
+          - master
+
+    # The patch just adds noise to the PRs. We only really care about overall
+    # coverage
+    patch: off
+
+ignore:
+- "**/setup.py"
+- "*/pmdarima/__check_build/*"
+- "*/pmdarima/_build_utils/*"
+- "*/pmdarima/_config.py"
+- "*/pmdarima/__init__.py"
+- "*/pmdarima/compat/matplotlib.py"
+- "*/pmdarima/utils/tests/test_vis.py"
+- "*/pmdarima/utils/visualization.py"
