@@ -28,7 +28,7 @@ def test_model_predict():
 # 2. Testando com casos extremos
 def test_small_dataset():
     data = np.random.rand(5)
-    time_series = np.random.rand(10000000)
+    time_series = np.random.rand(100000)
     model = auto_arima(time_series,
                                               seasonal=True,
                                               m=1,
